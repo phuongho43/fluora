@@ -8,11 +8,15 @@ def extract_intensities(
     masks: list[np.ndarray],
     track_df: pd.DataFrame,
 ) -> pd.DataFrame:
+    # predict_overlap_dataframe returns frame/label as a MultiIndex, with
+    # tree_id/track_id as columns. Promote the index to columns so we can
+    # iterate rows uniformly.
+    track_df = track_df.reset_index()
     records = []
     for _, row in track_df.iterrows():
         frame = int(row["frame"])
         label = int(row["label"])
-        cell_id = int(row["tree_id"])
+        cell_id = int(row["track_id"])
         pixels = images[frame][masks[frame] == label]
         if pixels.size > 0:
             records.append({
