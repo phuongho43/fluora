@@ -1,18 +1,15 @@
-import os
-
 import numpy as np
-from cellSAM import cellsam_pipeline
+from cellpose import models
 
 
 def segment_frames(images: list[np.ndarray], device: str = "cpu") -> list[np.ndarray]:
-    # cellsam_pipeline auto-selects the device via torch.cuda.is_available()
-    # and exposes no device argument. Force CPU by hiding CUDA devices; leave
-    # auto-detection in place when a GPU is requested.
-    if device == "cpu":
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # Cellpose downloads the cpsam weights from a public host (no access token)
+    # and caches them under ~/.cellpose. The model is loaded once and reused
+    # across frames. eval() returns (masks, flows, styles); we keep the masks.
+    model = models.CellposeModel(gpu=(device == "cuda"))
     masks = []
     for i, img in enumerate(images):
         print(f"  Segmenting frame {i + 1}/{len(images)}...", flush=True)
-        mask = cellsam_pipeline(img, use_wsi=False, low_contrast_enhancement=False)
-        masks.append(mask)
+        mask = model.eval(img)[0]
+        masks.append(mask.astype(np.int32))
     return masks

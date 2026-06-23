@@ -10,5 +10,5 @@ dependencies = [
     "pandas",
     "laptrack",
     "scikit-image",
-    "cellSAM @ git+https://github.com/vanvalenlab/cellSAM.git",
+    "cellpose>=4.2.1.1",
 ]
