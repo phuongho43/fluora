@@ -23,7 +23,7 @@ from scipy import stats as _st
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from fluora.stats import two_factor_stats, format_p
+from fluora.stats import two_factor_stats, blocked_interaction, paired_p, holm, format_p
 from fluora.plotting import STYLE, INK, errorbar_halfwidth
 
 warnings.filterwarnings("ignore")
@@ -41,43 +41,36 @@ def cytotox():
     d = d.rename(columns={"response": "value"})
     d["input"] = pd.Categorical(d["input"], INPUT_ORDER, ordered=True)
 
-    S = two_factor_stats(d, dv="value", factor_a="decoder", factor_b="input")
     print("\n" + "=" * 74)
-    print("FIG 5c  CAR-T cytotoxicity (% killing)  n=3 replicates/group")
+    print("FIG 5c  CAR-T cytotoxicity (% killing)  n=3 experimental replicates (paired)")
     print("=" * 74)
     print(d.groupby(["decoder", "input"], observed=True).value
             .agg(["mean", "std", "size"]).round(1).to_string())
-    a = S["anova"]
-    print("\nTwo-way ANOVA (decoder x input):")
-    print(a[["Source", "DF", "F", "p_unc", "np2"]].round(4).to_string(index=False))
-    print(f"decoder x input INTERACTION p = {S['lmm_interaction_p']:.2e}  <- antigen-specificity signature")
-    if S["homoscedasticity"] is not None:
-        print("equal_var:", bool(S["homoscedasticity"]["equal_var"].iloc[0]),
-              "(Levene p=%.3f)" % S["homoscedasticity"]["pval"].iloc[0])
+    # each 'repeat' is a full assay with all 6 conditions -> randomized-block design.
+    B = blocked_interaction(d, dv="value", factor_a="decoder", factor_b="input", subject="repeat")
+    print(f"\nBLOCKED (repeat as block) decoder x input INTERACTION "
+          f"F={B['interaction_F']:.1f}, p={B['interaction_p']:.2e}  <- antigen-specificity signature")
 
-    # Post-hoc = the crossover test the claim rests on: within each input, do the
-    # two decoders differ? (Dense-CD19 vs Sparse-PSMA, both % cytotoxicity). Tukey
-    # HSD across all 6 cells (pooled error from the ANOVA; variances homogeneous,
-    # Levene p=0.71) -- the standard, correctly-corrected post-hoc for a 2-way design.
+    # Post-hoc = the crossover: within each input, do the two decoders differ?
+    # Randomized-block design -> block in the omnibus, but pairwise via Tukey HSD
+    # (pooled error, homoscedastic per Levene) to keep power at n=3.
     from statsmodels.stats.multicomp import pairwise_tukeyhsd
     d["_cell"] = d.decoder + "|" + d.input.astype(str)
     tuk = pairwise_tukeyhsd(d.value.to_numpy(), d["_cell"].to_numpy())
     tk = pd.DataFrame(tuk.summary().data[1:], columns=tuk.summary().data[0])
     tk["p"] = tk["p-adj"].astype(float)
-    padj = {}
+
+    def _tp(g1, g2):
+        r = tk[((tk.group1 == g1) & (tk.group2 == g2)) | ((tk.group1 == g2) & (tk.group2 == g1))]
+        return float(r["p"].iloc[0]) if len(r) else np.nan
+
+    padj = {inp: _tp(f"Dense-CD19|{inp}", f"Sparse-PSMA|{inp}") for inp in INPUT_ORDER}
     print("\nBetween-decoder within each input (Dense-CD19 vs Sparse-PSMA, Tukey HSD):")
     for inp in INPUT_ORDER:
-        g1, g2 = f"Dense-CD19|{inp}", f"Sparse-PSMA|{inp}"
-        row = tk[((tk.group1 == g1) & (tk.group2 == g2)) | ((tk.group1 == g2) & (tk.group2 == g1))]
-        p = float(row["p"].iloc[0]) if len(row) else np.nan
-        padj[inp] = p
         dd = d[(d.decoder == "Dense-CD19") & (d.input == inp)].value.mean()
         sp = d[(d.decoder == "Sparse-PSMA") & (d.input == inp)].value.mean()
-        print(f"    {inp:>6} input: Dense-CD19 {dd:.0f}% vs Sparse-PSMA {sp:.0f}%  {format_p(p)}")
-    # reviewer #116 within-decoder Dense-CD19 None-vs-Sparse (also from the Tukey table)
-    row = tk[((tk.group1 == "Dense-CD19|None") & (tk.group2 == "Dense-CD19|Sparse")) |
-             ((tk.group1 == "Dense-CD19|Sparse") & (tk.group2 == "Dense-CD19|None"))]
-    print(f"  (#116 Dense-CD19 None vs Sparse: {format_p(float(row['p'].iloc[0]))})")
+        print(f"    {inp:>6} input: Dense-CD19 {dd:.0f}% vs Sparse-PSMA {sp:.0f}%  {format_p(padj[inp])}")
+    print(f"  (#116 Dense-CD19 None vs Sparse: {format_p(_tp('Dense-CD19|None', 'Dense-CD19|Sparse'))})")
 
     # leakiness / crosstalk quantification (#48/#49/#95)
     print("\nLeakiness (None input) & cross-talk (mismatched input):")
@@ -148,6 +141,10 @@ def bli():
     d["log10_flux"] = np.log10(d.y)
     # index mice within each group/timepoint (5 mice, in file order)
     d["mouse"] = d.groupby(["c", "t"]).cumcount()
+    # bilateral design: the two tumors (c0/c1 dense; c2/c3 sparse) are the two
+    # flanks of the SAME mouse -> a shared per-mouse id so target-vs-bystander is
+    # paired within mouse (methods: left/right flank of each animal).
+    d["mouse_id"] = np.where(d.input == "Dense", d.mouse, 5 + d.mouse)
 
     print("\n" + "=" * 74)
     print("FIG 5f  bilateral-tumor BLI  (log10 total flux; 5 mice/group)")
@@ -156,30 +153,25 @@ def bli():
     print("Day-18 log10(flux) by group:")
     print(last.groupby(["input", "tumor"]).log10_flux.agg(["mean", "std", "size"]).round(2).to_string())
 
-    # 2x2 ANOVA at day 18 on log10 flux; interaction = antigen-selective control
-    S = two_factor_stats(last, dv="log10_flux", factor_a="tumor", factor_b="input")
-    a = S["anova"]
-    print("\nDay-18 two-way ANOVA (tumor x input) on log10(flux):")
-    print(a[["Source", "DF", "F", "p_unc", "np2"]].round(4).to_string(index=False))
-    print(f"tumor x input INTERACTION p = {S['lmm_interaction_p']:.2e}  <- antigen-selective tumor control")
+    # Day-18: tumor is WITHIN-mouse (bilateral, paired), input is BETWEEN-mice
+    # -> mixed-design ANOVA (subject = mouse); interaction = antigen-selective control.
+    B = blocked_interaction(last, dv="log10_flux", factor_a="tumor", factor_b="input", subject="mouse_id")
+    print(f"\nDay-18 mixed ANOVA (tumor within-mouse x input between-mice) on log10(flux): "
+          f"interaction F={B['interaction_F']:.1f}, p={B['interaction_p']:.2e}  <- antigen-selective control")
 
-    # planned matched-vs-mismatched at day 18 (the biological claim), Holm
-    def cmp(inp, ta, tb):
-        a_ = last[(last.input == inp) & (last.tumor == ta)].log10_flux
-        b_ = last[(last.input == inp) & (last.tumor == tb)].log10_flux
-        return float(_st.ttest_ind(a_, b_, equal_var=False).pvalue)
+    # target vs bystander at day 18 -- the two tumors are the same mice (paired), Holm
     planned = {
-        "Dense input: Dense-CD19 (target) vs Sparse-PSMA (bystander)": cmp("Dense", "Dense-CD19", "Sparse-PSMA"),
-        "Sparse input: Sparse-PSMA (target) vs Dense-CD19 (bystander)": cmp("Sparse", "Sparse-PSMA", "Dense-CD19"),
+        "Dense": paired_p(last, "log10_flux", "mouse_id", "tumor", "Dense-CD19", "Sparse-PSMA",
+                          cond_col="input", cond_val="Dense"),
+        "Sparse": paired_p(last, "log10_flux", "mouse_id", "tumor", "Sparse-PSMA", "Dense-CD19",
+                           cond_col="input", cond_val="Sparse"),
     }
-    from statsmodels.stats.multitest import multipletests
-    keys = list(planned)
-    padj = multipletests([planned[k] for k in keys], method="holm")[1]
-    print("\nDay-18 planned contrasts (Welch t on log10 flux, Holm, exact p):")
-    for k, pc in zip(keys, padj):
-        print(f"  {k:60s} {format_p(pc)}")
+    padj = holm(planned)
+    print("\nDay-18 target vs bystander (paired within mouse on log10 flux, Holm):")
+    for inp in ("Dense", "Sparse"):
+        print(f"  {inp} input: {format_p(padj[inp])}")
 
-    day18_p = {"Dense": padj[0], "Sparse": padj[1]}
+    day18_p = padj
     _plot_bli(d, day18_p=day18_p)  # interaction p reported in the caption
     return d
 

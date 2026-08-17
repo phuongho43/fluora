@@ -115,10 +115,115 @@ def two_factor_stats(df, dv, factor_a, factor_b, subject=None, padjust="holm"):
                 homoscedasticity=homoscedasticity, lmm_interaction_p=inter_p)
 
 
+def blocked_interaction(df, dv, factor_a, factor_b, subject):
+    """Interaction of a two-factor design that shares a paired ``subject`` block.
+
+    The replicates/blocks are crossed with the conditions (each block contains all
+    condition combinations -- randomized-block / repeated-measures design), so a
+    plain between-subjects ANOVA ignores real structure and inflates the error.
+    Here the block enters as a random intercept: ``dv ~ C(a)*C(b) + (1|subject)``.
+
+    Returns dict with ``interaction_p`` (likelihood-ratio test of the interaction),
+    plus ``anova`` = the repeated-measures / mixed ANOVA table (pingouin) for F/df.
+    """
+    import pingouin as pg
+    import statsmodels.formula.api as smf
+    from statsmodels.stats.anova import anova_lm  # noqa: F401  (parity with two_factor)
+    from scipy import stats as st
+
+    d = df.dropna(subset=[dv]).copy()
+    # Finite-sample F-test (the valid test at small n): fully-crossed (both within)
+    # -> two-way RM-ANOVA; one within + one between -> mixed-design ANOVA. Small-n
+    # asymptotics (LMM likelihood-ratio / Wald) are wildly anticonservative here.
+    counts = d.groupby(subject)[[factor_a, factor_b]].nunique()
+    both_within = (counts[factor_a] > 1).all() and (counts[factor_b] > 1).all()
+    if both_within:
+        anova = pg.rm_anova(d, dv=dv, within=[factor_a, factor_b], subject=subject)
+    else:
+        within, between = (factor_b, factor_a) if (counts[factor_a] == 1).any() else (factor_a, factor_b)
+        anova = pg.mixed_anova(d, dv=dv, within=within, between=between, subject=subject)
+    src = anova["Source"].astype(str)
+    row = anova[src.str.contains(r"\*") | (src == "Interaction")].iloc[0]
+    pcol = "p-unc" if "p-unc" in anova.columns else "p_unc"
+    return dict(interaction_p=float(row[pcol]),
+                interaction_F=float(row["F"]), anova=anova)
+
+
+def mixed_contrast_p(df, dv, subject, group_col, a, b, cond_col=None, cond_val=None):
+    """p for group ``a`` vs ``b`` from a replicate-blocked linear mixed model.
+
+    Fits a cell-means model ``dv ~ 0 + cell + (1|subject)`` over the whole design
+    (cell = ``group_col`` or ``group_col``x``cond_col``) and t-tests the contrast
+    between the two cells. This blocks on ``subject`` (like a paired test, removing
+    batch offsets) while pooling the residual variance across all cells, so it
+    keeps power at small n instead of collapsing to n-1 df. Assumes homogeneous
+    variances (check Levene). Returns the two-sided p.
+    """
+    import numpy as np
+    import statsmodels.formula.api as smf
+
+    d = df.dropna(subset=[dv]).copy()
+    if cond_col is not None:
+        d["_cell"] = d[group_col].astype(str) + "|" + d[cond_col].astype(str)
+        la, lb = f"{a}|{cond_val}", f"{b}|{cond_val}"
+    else:
+        d["_cell"] = d[group_col].astype(str)
+        la, lb = str(a), str(b)
+    m = smf.mixedlm(f"{dv} ~ 0 + C(_cell)", d, groups=d[subject]).fit(reml=False)
+    beta = m.fe_params
+    names = list(beta.index)
+
+    def _idx(lbl):
+        hits = [i for i, n in enumerate(names) if f"[{lbl}]" in n]
+        return hits[0] if hits else None
+
+    ia, ib = _idx(la), _idx(lb)
+    if ia is None or ib is None:
+        return float("nan")
+    k = len(names)
+    c = np.zeros(k)
+    c[ia], c[ib] = 1.0, -1.0
+    cov = np.asarray(m.cov_params())[:k, :k]  # fixed-effects block
+    est = float(c @ beta.values)
+    se = float(np.sqrt(c @ cov @ c))
+    from scipy import stats as st
+    return float(2 * st.norm.sf(abs(est / se)))
+
+
+def paired_p(df, dv, subject, group_col, a, b, cond_col=None, cond_val=None):
+    """Paired t-test p for group ``a`` vs ``b`` (matched by ``subject``).
+
+    Optionally restricted to ``cond_col == cond_val`` first. Pairs the two groups
+    on the shared ``subject`` (block/mouse), removing between-block variance.
+    """
+    from scipy import stats as st
+    d = df if cond_col is None else df[df[cond_col] == cond_val]
+    pa = d[d[group_col] == a].groupby(subject)[dv].mean()
+    pb = d[d[group_col] == b].groupby(subject)[dv].mean()
+    common = pa.index.intersection(pb.index)
+    if len(common) < 2:
+        return float("nan")
+    return float(st.ttest_rel(pa.loc[common], pb.loc[common]).pvalue)
+
+
+def holm(pdict):
+    """Holm-correct a {label: p} dict; returns {label: p_adj}."""
+    from statsmodels.stats.multitest import multipletests
+    keys = [k for k in pdict if pdict[k] == pdict[k]]  # drop nan
+    if not keys:
+        return dict(pdict)
+    padj = multipletests([pdict[k] for k in keys], method="holm")[1]
+    out = dict(pdict)
+    out.update(dict(zip(keys, padj)))
+    return out
+
+
 def format_p(p):
     """Compact exact-p label (reviewers asked for exact p-values)."""
     if p is None or (isinstance(p, float) and np.isnan(p)):
         return ""
+    if p <= 0:  # numeric underflow (e.g. Tukey studentized range) -> honest bound
+        return "p<1e-4"
     if p < 1e-3:
         return f"p={p:.0e}".replace("e-0", "e-")
     if p < 0.01:
