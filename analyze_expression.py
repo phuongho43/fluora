@@ -40,15 +40,21 @@ REPORTER = {"0--dense-YFP": "Dense-YFP", "1--sparse-RFP": "Sparse-RFP",
 FLOOR = 1e-5  # detection floor for the log2 fold-ratio (None means are ~1e-4)
 
 
-def load_log2fc(base, reporter_map=None, input_map=None, baseline="None"):
+def load_log2fc(base, reporter_map=None, input_map=None, baseline="None", floor=None):
     """Per-replicate log2 fold-ratio to ``baseline`` (per reporter).
 
     ``reporter_map`` / ``input_map`` translate the folder names at the reporter
     (path[-5]) and input (path[-4]) levels; both default to the FM maps. The
     per-reporter ``baseline`` condition is the normalization reference.
+
+    ``floor`` is the pseudocount added before the ratio (guards log2(0) and damps
+    noise near zero). Default = FLOOR (1e-5, tuned for the FM assays whose baselines
+    are ~1e-4). Pass a smaller value for lower-signal datasets (e.g. the intensity
+    sweep, baselines ~1e-6) so the pseudocount doesn't swamp the real signal.
     """
     reporter_map = REPORTER if reporter_map is None else reporter_map
     input_map = INPUT if input_map is None else input_map
+    floor = FLOOR if floor is None else floor
     rows = []
     for rd in (D / base).rglob("results/y.csv"):
         p = rd.parts
@@ -57,7 +63,7 @@ def load_log2fc(base, reporter_map=None, input_map=None, baseline="None"):
                          raw=float(pd.read_csv(rd).y.mean())))
     df = pd.DataFrame(rows)
     base_mean = df[df.input == baseline].groupby("reporter").raw.mean()  # per-reporter baseline
-    df["value"] = np.log2((df.raw + FLOOR) / (df.reporter.map(base_mean) + FLOOR))
+    df["value"] = np.log2((df.raw + floor) / (df.reporter.map(base_mean) + floor))
     return df
 
 
@@ -100,7 +106,8 @@ def report(name, df, order):
 
 
 def plot_grouped_strip(df, order, out, reporters, pvals=None, ylabel=None,
-                       interaction_p=None, legend_loc="upper left"):
+                       interaction_p=None, legend_loc="upper left",
+                       xlabel=None, xtick_labels=None):
     """Fig 4g-style: reporters dodged within each input; per-rep points + mean±SEM."""
     rng = np.random.default_rng(0)
     offs = np.linspace(-0.18, 0.18, len(reporters))
@@ -130,7 +137,9 @@ def plot_grouped_strip(df, order, out, reporters, pvals=None, ylabel=None,
                    label=r) for r in reporters]
         ax.legend(handles=handles, loc=legend_loc, framealpha=0.9, fontsize=44)
         ax.set_xticks(range(len(order)))
-        ax.set_xticklabels([f"{o}\nInput" for o in order])
+        ax.set_xticklabels(xtick_labels or [f"{o}\nInput" for o in order])
+        if xlabel:
+            ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel or r"$\mathbf{Log_2}$ Norm. Output")
         ax.set_xlim(-0.6, len(order) - 0.4)
         ax.set_ylim(top=df.value.max() + 1.4)
@@ -297,10 +306,13 @@ def main():
             "3--BL10uW": "10", "4--BL50uW": "50"}
     rmap = {"0--reporter-only": "Reporter only", "1--dense-RFP": "Dense-RFP"}
     iorder = ["0", "1", "5", "10", "50"]
-    fb = load_log2fc("0--293T-intensity", reporter_map=rmap, input_map=imap, baseline="0")
+    # low-signal dataset (baselines ~1e-6) -> small floor so the pseudocount does
+    # not flatten the reporter-only control's real (small) intensity scatter.
+    fb = load_log2fc("0--293T-intensity", reporter_map=rmap, input_map=imap,
+                     baseline="0", floor=1e-7)
     _, _ = report("INTENSITY (Fig 4b)", fb, iorder)
     ireps = ["Reporter only", "Dense-RFP"]
-    pv = freq_reporter_pvals(fb, ["10", "50"], ireps)  # sig at higher intensities
+    pv = freq_reporter_pvals(fb, ["5", "10", "50"], ireps)  # reporter-only vs Dense-RFP
     for inp, p in pv.items():
         print(f"  Reporter-only vs Dense-RFP at {inp} uW: {format_p(p)}")
     out = plot_freq_response(
