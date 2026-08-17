@@ -306,10 +306,12 @@ def main():
             "3--BL10uW": "10", "4--BL50uW": "50"}
     rmap = {"0--reporter-only": "Reporter only", "1--dense-RFP": "Dense-RFP"}
     iorder = ["0", "1", "5", "10", "50"]
-    # low-signal dataset (baselines ~1e-6) -> small floor so the pseudocount does
-    # not flatten the reporter-only control's real (small) intensity scatter.
+    # floor = the assay's detection/background level (~3e-6, read off the
+    # non-responsive reporter-only control): small enough that the pseudocount
+    # doesn't flatten the reporter-only scatter, large enough that near-background
+    # Dense-RFP points (0/1 uW) don't swing wildly negative from log-ratio noise.
     fb = load_log2fc("0--293T-intensity", reporter_map=rmap, input_map=imap,
-                     baseline="0", floor=1e-7)
+                     baseline="0", floor=3e-6)
     _, _ = report("INTENSITY (Fig 4b)", fb, iorder)
     ireps = ["Reporter only", "Dense-RFP"]
     pv = freq_reporter_pvals(fb, ["5", "10", "50"], ireps)  # reporter-only vs Dense-RFP
