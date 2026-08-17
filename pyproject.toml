@@ -10,5 +10,9 @@ dependencies = [
     "pandas",
     "laptrack",
     "scikit-image",
+    "scipy",
     "cellpose>=4.2.1.1",
+    "matplotlib>=3.11.1",
+    "pingouin",
+    "statsmodels",
 ]

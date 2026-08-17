@@ -10,5 +10,11 @@ wheels/
 .venv
 
 # Test data and pipeline outputs
-imgs/
-traces.csv
+tuning/
+spotcheck/
+sc/
+results_dl/
+# cached segmentation masks (fetch via `modal volume get`)
+masks/
+# rendered overlay movies (regenerate with make_videos.py)
+results/videos/
