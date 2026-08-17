@@ -84,22 +84,33 @@ def analyze(marker, title):
     return df, pvals
 
 
-def plot(cd19, psma, out):
+def plot(panels, out):
+    """panels: list of (df, title, pvals, matched_input) -- draws the decoder's
+    matched-input vs None bracket per panel."""
     rng = np.random.default_rng(0)
     with mpl.rc_context(STYLE):
         fig, axes = plt.subplots(1, 2, figsize=(30, 15), sharey=True)
-        for ax, (df, title) in zip(axes, [(cd19, "CD19"), (psma, "PSMA")]):
+        for ax, (df, title, pvals, matched) in zip(axes, panels):
             for x, g in enumerate(ORDER):
                 v = df[df.group == g].pct_pos.to_numpy()
                 ax.scatter(x + rng.uniform(-0.08, 0.08, len(v)), v, s=550,
                            color=GCOLOR[g], alpha=0.85, linewidths=2, edgecolors=INK, zorder=3)
                 ax.errorbar(x, v.mean(), yerr=errorbar_halfwidth(v, "sem"), fmt="o", ms=22,
                             color=INK, ecolor=INK, elinewidth=8, capsize=16, capthick=8, zorder=4)
+            # bracket: matched decoder input vs None (the "decoder turns on" test)
+            p = pvals.get(frozenset((matched, "None")))
+            if p is not None:
+                x1, x2 = ORDER.index("None"), ORDER.index(matched)
+                y = df.pct_pos.max() + 10
+                ax.plot([x1, x1, x2, x2], [y - 4, y, y, y - 4], color=INK, lw=5)
+                ax.text((x1 + x2) / 2, y + 1, format_p(p), ha="center", va="bottom",
+                        fontsize=44, color=INK)
             ax.set_title(f"{title} antigen", fontsize=64)
             ax.set_xticks(range(len(ORDER)))
             ax.set_xticklabels(ORDER, rotation=35, ha="right")
             ax.set_xlim(-0.6, len(ORDER) - 0.4)
         axes[0].set_ylabel("% Antigen+")
+        axes[0].set_ylim(top=max(cd.pct_pos.max() for cd, *_ in panels) + 22)
         fig.tight_layout()
         fig.savefig(out)
         plt.close(fig)
@@ -107,9 +118,10 @@ def plot(cd19, psma, out):
 
 
 def main():
-    cd19, _ = analyze("0--CD19", "CD19 (Dense-CD19 decoder)")
-    psma, _ = analyze("1--PSMA", "PSMA (Sparse-PSMA decoder)")
-    out = plot(cd19, psma, RESULTS / "fig_5b_antigen_flow.png")
+    cd19, cd_p = analyze("0--CD19", "CD19 (Dense-CD19 decoder)")
+    psma, ps_p = analyze("1--PSMA", "PSMA (Sparse-PSMA decoder)")
+    out = plot([(cd19, "CD19", cd_p, "Dense"), (psma, "PSMA", ps_p, "Sparse")],
+               RESULTS / "fig_5b_antigen_flow.png")
     print("\nsaved", out)
 
 
