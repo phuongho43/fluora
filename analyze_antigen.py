@@ -23,12 +23,15 @@ from scipy import stats as _st
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from fluora.stats import two_factor_stats, blocked_interaction, paired_p, holm, format_p
+from fluora.stats import (two_factor_stats, blocked_interaction, paired_p, holm,
+                          format_p, write_ledger)
 from fluora.plotting import STYLE, INK, errorbar_halfwidth
 
 warnings.filterwarnings("ignore")
 D = Path("/home/phuong/projects/csc-revisions-2026/data/4--antigen")
 RESULTS = Path("results")
+# Figures live in one place for the whole project; results/ keeps only the data.
+FIGURES = Path("/home/phuong/projects/csc-revisions-2026/figures/regenerated")
 DEC_COLOR = {"Dense-CD19": "#8069EC", "Sparse-PSMA": "#EA822C"}
 INPUT_ORDER = ["None", "Sparse", "Dense"]
 
@@ -82,6 +85,11 @@ def cytotox():
         print(f"  {dec}: None(leak)={none:.0f}%  {mism}(crosstalk)={cx:.0f}%  matched(on)={on:.0f}%")
 
     _plot_cytotox(d, planned_padj=padj)  # interaction p reported in the caption
+    write_ledger(FIGURES / "fig_S7c_cytotoxicity.png", "analyze_antigen.py",
+                 "Tukey HSD over all decoder x input cells (pooled error), between-decoder "
+                 "contrast within each input",
+                 {f"{inp} input, Dense-CD19 vs Sparse-PSMA": padj[inp]
+                  for inp in INPUT_ORDER if padj.get(inp) == padj.get(inp)})
     return d
 
 
@@ -92,7 +100,17 @@ def _plot_cytotox(d, planned_padj, interaction_p=None):
     xpos = {(dec, inp): ri + offs[ci]
             for ci, dec in enumerate(decs) for ri, inp in enumerate(INPUT_ORDER)}
     with mpl.rc_context(STYLE):
-        fig, ax = plt.subplots(figsize=(20, 16))
+        # Placed 9.3 cm wide in Figure S7, a 20-inch canvas at STYLE's point sizes printed at
+        # 13.6 pt -- more than three times panel E in the same figure and twice what published
+        # Cell Stem Cell figures use. Printed size is source_pt x (placed_in / source_in) x 0.5,
+        # so the canvas is the lever: 20 -> 38.8 in divides the printed type by 1.94 and lands on
+        # 7 pt. The aspect is unchanged, so the figure's height is unaffected, and the axes take a
+        # larger share of the panel because the labels no longer dominate it.
+        # dpi is dropped with the canvas enlarged: at STYLE's 300 the source came out 11,091 px
+        # wide for a panel printed 9.3 cm, i.e. ~3,000 ppi, ninety-seven megapixels, and past the
+        # point where PIL warns about decompression bombs. 100 dpi still gives 3,880 px, about
+        # 1,060 ppi at print size, well over Cell's 300 ppi requirement.
+        fig, ax = plt.subplots(figsize=(38.8, 31.0), dpi=100)
         for ci, dec in enumerate(decs):
             for ri, inp in enumerate(INPUT_ORDER):
                 v = d[(d.decoder == dec) & (d.input == inp)].value.to_numpy()
@@ -111,11 +129,11 @@ def _plot_cytotox(d, planned_padj, interaction_p=None):
             y = top + 6
             ax.plot([x1, x1, x2, x2], [y - 2, y, y, y - 2], color=INK, lw=5)
             ax.text((x1 + x2) / 2, y, format_p(p), ha="center", va="bottom",
-                    fontsize=38, color=INK)
+                    fontsize=62, color=INK)
         handles = [mpl.lines.Line2D([], [], marker="o", ls="none", ms=22,
                    markerfacecolor=DEC_COLOR[dc], markeredgecolor=INK, markeredgewidth=2,
                    label=dc) for dc in decs]
-        ax.legend(handles=handles, loc="lower right", framealpha=0.95, fontsize=44)
+        ax.legend(handles=handles, loc="lower right", framealpha=0.95, fontsize=62)
         ax.set_xticks(range(len(INPUT_ORDER)))
         ax.set_xticklabels([f"{o}\nInput" for o in INPUT_ORDER])
         ax.set_ylabel("% Cytotoxicity")
@@ -124,9 +142,9 @@ def _plot_cytotox(d, planned_padj, interaction_p=None):
         ax.set_xlim(-0.6, len(INPUT_ORDER) - 0.4)
         ax.set_ylim(0, 112)
         fig.tight_layout()
-        fig.savefig(RESULTS / "fig_5c_cytotoxicity.png")
+        fig.savefig(FIGURES / "fig_S7c_cytotoxicity.png", dpi=100)
         plt.close(fig)
-    print("saved", RESULTS / "fig_5c_cytotoxicity.png")
+    print("saved", FIGURES / "fig_S7c_cytotoxicity.png")
 
 
 # ----------------------------- Fig 5f: in-vivo BLI ------------------------------
@@ -201,22 +219,30 @@ def _plot_bli(d, interaction_p=None, day18_p=None):
                 ax.plot([17.4, 17.4, 18.6, 18.6], [y / 1.25, y, y, y / 1.25],
                         color=INK, lw=5, zorder=5)
                 ax.text(18, y * 1.35, format_p(day18_p[inp]), ha="center", va="bottom",
-                        fontsize=40, color=INK)
-                ax.set_ylim(top=ymax * 4)
+                        fontsize=62, color=INK)
+                ax.set_ylim(top=ymax * 12)   # headroom so the p-value label clears the legend above the axes
             ax.set_yscale("log")
-            ax.set_title(f"{inp} Input", fontsize=64)
+            ax.set_title(f"{inp} Input", fontsize=64, pad=120)
             ax.set_xlabel("Day")
             ax.set_xticks([3, 6, 9, 12, 15, 18])
             ax.set_xlim(2, 19.5)
-            ax.legend(loc="upper left", framealpha=0.9, fontsize=44)
+            # No per-axes legend. "upper left" put the legend box over the day-3 and day-6 points
+            # and across the p-value label -- 4 data points covered, 12% of "p=0.001" hidden, both
+            # found by analysis/check_plot_collisions.py. These curves climb from bottom-left to
+            # top-right across four log decades, so no in-axes corner is reliably empty. One
+            # shared legend above the figure serves both panels, which also stops the two
+            # identical legends from running into each other.
         axes[0].set_ylabel("Tumor flux (p/s)")
+        h, lab = axes[0].get_legend_handles_labels()
+        fig.legend(h, lab, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=2,
+                   frameon=False, fontsize=58, columnspacing=3.0)
         if interaction_p is not None:
             fig.suptitle(f"Day 18 tumor x input interaction  {format_p(interaction_p)}",
                          fontsize=52, y=0.915)
-        fig.tight_layout(w_pad=1.0)
-        fig.savefig(RESULTS / "fig_5f_bli.png")
+        fig.tight_layout(w_pad=1.0, rect=(0, 0, 1, 0.90))
+        fig.savefig(FIGURES / "fig_S7f_bli.png")
         plt.close(fig)
-    print("saved", RESULTS / "fig_5f_bli.png")
+    print("saved", FIGURES / "fig_S7f_bli.png")
 
 
 if __name__ == "__main__":

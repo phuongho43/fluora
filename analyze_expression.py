@@ -23,11 +23,13 @@ import pingouin as pg
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from fluora.stats import two_factor_stats, blocked_interaction, format_p
-from fluora.plotting import STYLE, INK, errorbar_halfwidth
+from fluora.stats import two_factor_stats, blocked_interaction, format_p, write_ledger
+from fluora.plotting import scaled_style, STYLE, INK, errorbar_halfwidth
 
 warnings.filterwarnings("ignore")
 RESULTS = Path("results")
+# Figures live in one place for the whole project; results/ keeps only the data.
+FIGURES = Path("/home/phuong/projects/csc-revisions-2026/figures/regenerated")
 RCOLOR = {"Dense-YFP": "#8069EC", "Dense-RFP": "#8069EC", "Sparse-RFP": "#EA822C",
           "Reporter only": "#34495E", "TetR-LOVfast + Zdk-VP64": "#2ECC71",
           "TetR-iLIDslow + sspB-VP64": "#D143A4"}
@@ -131,11 +133,19 @@ def plot_grouped_strip(df, order, out, reporters, pvals=None, ylabel=None,
                     ax.plot([ri + offs[0], ri + offs[0], ri + offs[-1], ri + offs[-1]],
                             [y, y + 0.25, y + 0.25, y], color=INK, lw=5)
                     ax.text(ri, y + 0.3, format_p(pvals[inp]), ha="center", va="bottom",
-                            fontsize=44, color=INK)
+                            fontsize=62, color=INK)
         handles = [mpl.lines.Line2D([], [], marker="o", ls="none", ms=26,
                    markerfacecolor=RCOLOR[r], markeredgecolor=INK, markeredgewidth=2,
                    label=r) for r in reporters]
-        ax.legend(handles=handles, loc=legend_loc, framealpha=0.9, fontsize=44)
+        if legend_loc == "above":
+            # An opaque legend in a corner does not just sit near a bracket, it CLIPS it:
+            # at upper left it covered the left tick of Figure 3G's p<1e-4 bracket, so the
+            # bracket appeared to start in mid-air. Above the axes it covers nothing.
+            ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.005),
+                      ncol=len(reporters), frameon=False, fontsize=62,
+                      handletextpad=0.4, columnspacing=1.6)
+        else:
+            ax.legend(handles=handles, loc=legend_loc, framealpha=0.9, fontsize=62)
         ax.set_xticks(range(len(order)))
         ax.set_xticklabels(xtick_labels or [f"{o}\nInput" for o in order])
         if xlabel:
@@ -190,16 +200,25 @@ def plot_4e_components(df, order, out, reporters, brackets):
             x1, x2 = order.index(ia), order.index(ib)
             ax.plot([x1, x1, x2, x2], [y - 0.4, y, y, y - 0.4], color=INK, lw=5, zorder=5)
             ax.text((x1 + x2) / 2, y + 0.1, format_p(p), ha="center", va="bottom",
-                    fontsize=40, color=INK)
+                    fontsize=62, color=INK)
         handles = [mpl.lines.Line2D([], [], marker="o", ls="none", ms=26,
                    markerfacecolor=RCOLOR[r], markeredgecolor=INK, markeredgewidth=2,
                    label=r) for r in reporters]
-        ax.legend(handles=handles, loc="lower left", framealpha=0.95, fontsize=44)
+        # Outside the axes, above. Inside there is no free corner: "lower left" covered the
+        # None-input points and the Dense-input point at -5, and every other corner holds either
+        # data or a significance bracket.
+        # One column, not two: these labels are long, and side by side they widened the figure
+        # from 5452 to 8041 px, which squeezed the plot and ran the x tick labels together. The
+        # panel is placed at a fixed width, so a wider source also means smaller printed text.
+        ax.legend(handles=handles, loc="lower left", bbox_to_anchor=(0.0, 1.005),
+                  ncol=1, frameon=False, fontsize=62, handletextpad=0.4)
         ax.set_xticks(range(len(order)))
         ax.set_xticklabels([f"{o}\nInput" for o in order])
         ax.set_ylabel(r"$\mathbf{Log_2}$ Norm. Output")
         ax.set_xlim(-0.6, len(order) - 0.4)
-        ax.set_ylim(top=max(y for *_, y in brackets) + 1.5)
+        # +1.5 was less than the 2.26-unit label height, so the topmost p-value sat
+        # outside the axes and only survived because savefig uses a tight bbox.
+        ax.set_ylim(top=max(y for *_, y in brackets) + 2.6)
         fig.tight_layout()
         fig.savefig(out)
         plt.close(fig)
@@ -232,8 +251,15 @@ def plot_freq_response(df, order, out, reporters, interaction_p=None, pvals=None
                        ylabel=r"$\mathbf{Log_2}$ Norm. Output"):
     """Fig 4c-style response curve: log2fc vs an ordered input axis, per reporter."""
     xtick_map = HZ_TICKS if xtick_map is None else xtick_map
-    with mpl.rc_context(STYLE):
-        fig, ax = plt.subplots(figsize=(22, 16))
+    # Drawn at 17 x 12.4 rather than 22 x 16 so that the source is about 5x the width it is
+    # placed at, the same overscale the other panels get. Shrinking the figure (rather than
+    # enlarging the type) is what actually raises printed text size: with savefig bbox="tight",
+    # larger axis type widens the source and cancels itself out.
+    # axes.labelsize 96 was set for a 22-inch canvas; on this one the axis labels grew large
+    # enough to collide with each other in the bottom-left corner. 78 still prints around 8 pt,
+    # well clear of the 5 pt floor, since the labels are the LARGEST text in the panel.
+    with mpl.rc_context({**STYLE, "axes.labelsize": 78}):
+        fig, ax = plt.subplots(figsize=(20, 13.6))
         ax.axhline(0, color=INK, lw=4, ls=(0, (1, 2)), alpha=0.6, zorder=1)
         x = np.arange(len(order))
         means = {}
@@ -251,18 +277,34 @@ def plot_freq_response(df, order, out, reporters, interaction_p=None, pvals=None
         # Dense-vs-Sparse significance: a short bracket centered above the data
         # points at that frequency, p-value above it.
         if pvals:
-            for inp, p in pvals.items():
+            # Stagger neighbouring brackets. Adjacent inputs reach a similar height, so drawn at
+            # one offset their p-value labels run into each other -- "p=6e-4" and "p=1e-4" were
+            # touching at 10 and 50 uW/mm2.
+            prev_xi, level = None, 0
+            for k, (inp, p) in enumerate(sorted(pvals.items(),
+                                                key=lambda kv: order.index(kv[0])
+                                                if kv[0] in order else 99)):
                 if inp not in order:
                     continue
                 xi = order.index(inp)
                 ytop = df[df.input == inp].value.max()
-                y = ytop + 0.6
+                # Stagger only against an ADJACENT bracket, alternating within a run of them.
+                # Keying the bump off the loop index instead raised Figure 3C's 1 Hz label even
+                # though its neighbour is two positions away, pushing it into the legend; keying
+                # it off adjacency alone then put Figure 3B's 10 and 50 uW labels at one height.
+                level = (1 - level) if (prev_xi is not None and xi - prev_xi == 1) else 0
+                prev_xi = xi
+                y = ytop + 0.6 + 1.5 * level
                 ax.plot([xi - 0.18, xi - 0.18, xi + 0.18, xi + 0.18],
                         [y - 0.25, y, y, y - 0.25], color=INK, lw=5, zorder=5)
                 ax.text(xi, y + 0.15, format_p(p), ha="center", va="bottom",
-                        fontsize=40, color=INK)
-        ax.set_ylim(top=df.value.max() + 1.4)
-        ax.legend(loc="upper left", framealpha=0.9, fontsize=44)
+                        fontsize=62, color=INK)
+        # Headroom for the brackets AND their labels: the p-value text sits 0.15 above a bracket
+        # drawn 0.6 above the tallest point, and at 62 pt it was being clipped by the axes.
+        ax.set_ylim(top=df.value.max() + 2.6)
+        # Outside the axes, above -- "upper left" was drawn over the rising Dense-RFP curve.
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.005), ncol=len(reporters),
+                  frameon=False, fontsize=62, handletextpad=0.4, columnspacing=1.6)
         ax.set_xticks(x)
         ax.set_xticklabels([xtick_map.get(o, o) for o in order])
         ax.set_xlabel(xlabel)
@@ -283,9 +325,24 @@ def main():
     print(f"\n>>> Reviewer #115: Dense-YFP vs Sparse-RFP at DENSE input "
           f"(Tukey): {format_p(pv.get('Dense'))}")
     print(f"    (at SPARSE input: {format_p(pv.get('Sparse'))})")
-    out = plot_grouped_strip(fd, dorder, RESULTS / "fig_4g_dual_decoder.png",
-                             ["Dense-YFP", "Sparse-RFP"], pvals=pv)  # interaction p -> caption
+    out = plot_grouped_strip(fd, dorder, FIGURES / "fig_4g_dual_decoder.png",
+                             ["Dense-YFP", "Sparse-RFP"], pvals=pv,
+                             legend_loc="above")  # interaction p -> caption
     print("saved", out)
+    # The interaction is quoted in Table S1 and the response letter as the GREENHOUSE-GEISSER
+    # corrected p, which is what the row's stated correction implies (epsilon 0.52 here). The
+    # uncorrected p from the same ANOVA is 7.6e-5; the letter quoted that by mistake and said
+    # "F(2,4) = 228, p = 8x10-5" against Table S1's "p = 0.004" for the same F and df. Record the
+    # reported value so the two documents are held to the same number. P.H. decided 2026-09-07.
+    _row = Sd["blocked_anova"]
+    _gg = float(_row[_row.Source == "reporter * input"]["p_GG_corr"].iloc[0])
+    write_ledger(FIGURES / "fig_4g_dual_decoder.png", "analyze_expression.py",
+                 "Tukey HSD (pooled error) between reporters within each input; interaction from "
+                 "a replicate-blocked RM-ANOVA reported Greenhouse-Geisser corrected",
+                 {f"{k} input, Dense-YFP vs Sparse-RFP": v for k, v in pv.items() if v == v}
+                 | {"reporter x input interaction (GG-corrected)": _gg},
+                 computed_only={"reporter x input interaction (uncorrected)":
+                                Sd["blocked_interaction_p"]})
 
     # --- Fig 4c + Fig S4: frequency sweep (293T and K562) ---
     sorder = ["None", "1/20s", "1/10s", "1/4s", "1/2s", "1/1s"]
@@ -296,9 +353,19 @@ def main():
     ]:
         fs, Ss = report(label, load_log2fc(base), sorder)
         pv = freq_reporter_pvals(fs, ["1/4s", "1/1s"], reps)
+        write_ledger(FIGURES / out_name, "analyze_expression.py",
+                     "Tukey HSD between reporters at the annotated frequencies; interaction from "
+                     "a replicate-blocked model",
+                     {f"{k} input, Dense-RFP vs Sparse-RFP": v for k, v in pv.items() if v == v},
+                     computed_only={"reporter x input interaction":
+                                    Ss["blocked_interaction_p"]})
         for inp, p in pv.items():
             print(f"  Dense-RFP vs Sparse-RFP at {inp}: {format_p(p)}")
-        out = plot_freq_response(fs, sorder, RESULTS / out_name, reps, pvals=pv)
+        # RESULTS, not FIGURES, was a silent dead end: the ledger above is written to
+        # FIGURES/ and assemble.py places FIGURES/fig_4c_freq_sweep.png, so the panel in
+        # the manuscript was whatever this last wrote there -- a 2026-09-05 copy, three
+        # days stale, while every rerun updated a file nothing reads.
+        out = plot_freq_response(fs, sorder, FIGURES / out_name, reps, pvals=pv)
         print("saved", out)
 
     # --- Fig 4b: blue-light intensity dose-response (reporter-only vs Dense-RFP) ---
@@ -318,10 +385,13 @@ def main():
     for inp, p in pv.items():
         print(f"  Reporter-only vs Dense-RFP at {inp} uW: {format_p(p)}")
     out = plot_freq_response(
-        fb, iorder, RESULTS / "fig_4b_intensity.png", ireps, pvals=pv,
+        fb, iorder, FIGURES / "fig_4b_intensity.png", ireps, pvals=pv,
         xlabel=r"Blue Light Intensity ($\mathbf{\mu}$W/mm$^2$)",
         xtick_map={i: i for i in iorder})
     print("saved", out)
+    write_ledger(FIGURES / "fig_4b_intensity.png", "analyze_expression.py",
+                 "Tukey HSD, reporter-only vs Dense-RFP at each intensity",
+                 {f"{k} uW/mm2, reporter-only vs Dense-RFP": v for k, v in pv.items() if v == v})
 
     # --- Fig 4e: individual Sparse-RFP components under None/Sparse/Dense ---
     cmap = {"0--12TetO-YB-mScI_TetR-mNLS-LOV27V_Zdk1-mNLS-VP64": "TetR-LOVfast + Zdk-VP64",
@@ -332,13 +402,21 @@ def main():
     # Within-component comparisons (matching original fig 4e):
     #   iLIDslow activates at both sparse AND dense (None-vs-Sparse, None-vs-Dense);
     #   LOVfast represses only at dense (Sparse-vs-Dense).
-    brackets = [(ilid, "None", "Sparse", 11.0), (ilid, "None", "Dense", 12.6),
+    # Bracket levels are hand-placed, so the gap between two stacked brackets has to clear the
+    # lower one's p-value LABEL, not just its line. At fontsize 62 that label is 2.26 data units
+    # tall and sits 0.1 above its bracket, i.e. it reaches 13.36 -- the second bracket at 12.6 was
+    # drawn straight through the middle of "p=5e-7". 13.8 clears it with a margin.
+    brackets = [(ilid, "None", "Sparse", 11.0), (ilid, "None", "Dense", 13.8),
                 (lov, "Sparse", "Dense", 1.6)]
     for rep, ia, ib, _ in brackets:
         print(f"  {rep.split(' + ')[0]}: {ia} vs {ib}  "
               f"{format_p(within_reporter_tukey(fe, rep, ia, ib))}")
-    out = plot_4e_components(fe, dorder, RESULTS / "fig_4e_components.png", [lov, ilid], brackets)
+    out = plot_4e_components(fe, dorder, FIGURES / "fig_4e_components.png", [lov, ilid], brackets)
     print("saved", out)
+    write_ledger(FIGURES / "fig_4e_components.png", "analyze_expression.py",
+                 "within-component Tukey HSD",
+                 {f"{rep.split(' + ')[0]}, {ia} vs {ib}": within_reporter_tukey(fe, rep, ia, ib)
+                  for rep, ia, ib, _ in brackets})
 
 
 if __name__ == "__main__":

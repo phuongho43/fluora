@@ -57,18 +57,32 @@ def decoder_regime_stats(conditions, regimes, min_frames=55, apply_qc=True):
 
     # between-decoder Holm-corrected p per regime (for the fig_2j annotations)
     inter = posthoc[posthoc.Contrast == "regime * decoder"]
-    between_p = {row.regime: float(row["p_corr"]) for _, row in inter.iterrows()}
+    # Key on the decoder PAIR as well as the regime. Keying on regime alone silently
+    # kept whichever pair sorted last (Plain-vs-Sparse), not the Dense-vs-Sparse
+    # contrast the name implies. Only reached when a caller annotates a 2-condition
+    # plot, but it was wrong for the 3-condition call.
+    between_p = {(row.regime, row.A, row.B): float(row["p_corr"])
+                 for _, row in inter.iterrows()}
+    for _, row in inter.iterrows():
+        if {row.A, row.B} == {"Dense-ddFP", "Sparse-ddFP"}:
+            between_p[row.regime] = float(row["p_corr"])
 
     # LMM: value ~ decoder*regime + (1|movie); LRT for the interaction
     f_full = "value ~ C(decoder)*C(regime)"
     f_add = "value ~ C(decoder)+C(regime)"
     m1 = smf.mixedlm(f_full, df, groups=df.movie).fit(reml=False)
     m0 = smf.mixedlm(f_add, df, groups=df.movie).fit(reml=False)
-    lmm_p = float(st.chi2.sf(2 * (m1.llf - m0.llf), len(regimes) - 1))
+    # df = (n_decoders - 1) * (n_regimes - 1), not n_regimes - 1. The old form used 2
+    # for the 3x3 design, where the interaction actually costs 4 parameters, and was
+    # therefore anti-conservative. Take df from the fitted models so it cannot drift.
+    lmm_df = len(m1.params) - len(m0.params)
+    lmm_p = float(st.chi2.sf(2 * (m1.llf - m0.llf), lmm_df))
+    lmm_converged = bool(m1.converged and m0.converged)
 
     return dict(table=df, normality=normality, homoscedasticity=homoscedasticity,
                 anova=anova, posthoc=posthoc, between_p=between_p,
-                lmm_interaction_p=lmm_p)
+                lmm_interaction_p=lmm_p, lmm_interaction_df=lmm_df,
+                lmm_converged=lmm_converged)
 
 
 def two_factor_stats(df, dv, factor_a, factor_b, subject=None, padjust="holm"):
@@ -229,3 +243,89 @@ def format_p(p):
     if p < 0.01:
         return f"p={p:.3f}"
     return f"p={p:.2f}"
+
+
+def ledger_forms(value, kind="p"):
+    """Every way the manuscript might legitimately write this number.
+
+    A checker comparing a panel's annotation against the text has to allow for the fact that the
+    same p-value is written "p = 0.33", "p=0.33", "0.33", and that 6e-6 appears as "6 x 10-6" with
+    the exponent in a superscript run. Centralised so the four analysis drivers cannot each invent
+    a slightly different set.
+    """
+    import numpy as _np
+    if value is None or (isinstance(value, float) and _np.isnan(value)):
+        return []
+    if kind == "F":
+        return [f"F = {value:.1f}", f"F={value:.1f}", f"{value:.1f}"]
+    lab = format_p(value)
+    out = [lab, lab.replace("p=", "p = "), lab.replace("p=", "")]
+    if lab.startswith("p<"):
+        # format_p reports an underflowed p as the bound "p<1e-4"; the manuscript writes the
+        # same thing as "p < 10-4" with the exponent in a superscript run.
+        out += ["p < 10-4", "p<10-4", "< 10-4", "p < 1e-4", "p < 0.0001"]
+    if 0 < value < 1e-3:
+        mant, exp = f"{value:.0e}".split("e")
+        e = int(exp)
+        out += [f"{mant} x 10{e}", f"{mant} x 10-{abs(e)}", f"{mant}e{e}", f"{mant}e-{abs(e)}",
+                f"{mant} × 10-{abs(e)}"]
+    elif value >= 1e-3:
+        # "%.2f" of a small p is "0.00", which matches almost any sentence and would turn the
+        # check into a rubber stamp. Only emit a rounded form that still carries information.
+        two = f"{value:.2f}"
+        if float(two) > 0:
+            out.append(two)
+        out.append(f"{value:.3f}".rstrip("0").rstrip("."))
+    # Drop anything too short or too generic to be evidence -- "1." would match almost any
+    # sentence and turn the check into a rubber stamp.
+    return sorted({o for o in out if o and len(o) >= 3 and not o.endswith(".")})
+
+
+def write_ledger(panel_path, driver, correction, values, notes=None, computed_only=None):
+    """Record what a panel is annotated with, so a checker can hold the text to it.
+
+    Written beside the panel as <panel>.stats.json and read by
+    csc-revisions-2026/analysis/check_manuscript.py. Exists because Figure 2I carried p = 0.16
+    while Table S1 said p = 0.33 -- the same contrast under a 3- and a 9-comparison Holm family --
+    and no check compared the figure to the text.
+
+        write_ledger(FIGURES / "fig_S7c_cytotoxicity.png", "analyze_antigen.py",
+                     "Tukey HSD across the 3 between-decoder contrasts",
+                     {"Sparse input, Dense-CD19 vs Sparse-PSMA": p_sparse, ...})
+
+    `values` maps a human-readable label to a p-value (or to (value, "F") for an F statistic).
+    Put a number under `computed_only` instead when the driver computes it but does NOT draw it on
+    the panel -- a supporting analysis, or a panel Table S1 declares descriptive. Those are
+    recorded for provenance and are not required to appear in the text; requiring them would make
+    the check cry wolf, and a check that cries wolf gets ignored.
+    """
+    import json
+    import datetime
+    from pathlib import Path as _Path
+    panel = _Path(panel_path)
+    quoted = {}
+    for label, v in values.items():
+        kind = "p"
+        if isinstance(v, (tuple, list)):
+            v, kind = v
+        forms = ledger_forms(float(v), kind)
+        if forms:
+            quoted[label] = forms
+    extra = {}
+    for label, v in (computed_only or {}).items():
+        kind = "p"
+        if isinstance(v, (tuple, list)):
+            v, kind = v
+        forms = ledger_forms(float(v), kind)
+        if forms:
+            extra[label] = forms
+    rec = {"panel": panel.name, "driver": driver,
+           "generated": datetime.datetime.now().isoformat(timespec="seconds"),
+           "correction": correction, "quoted_in_text": quoted,
+           "computed_not_annotated": extra}
+    if notes:
+        rec["notes"] = notes
+    out = panel.with_suffix(".stats.json")
+    out.write_text(json.dumps(rec, indent=2))
+    print(f"  ledger {out.name}: {len(quoted)} value(s)")
+    return out

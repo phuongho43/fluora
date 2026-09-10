@@ -20,10 +20,12 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from fluora.plotting import STYLE, INK, errorbar_halfwidth
-from fluora.stats import format_p
+from fluora.stats import format_p, write_ledger
 
 D = Path("/home/phuong/projects/csc-revisions-2026/data/1--biosensor")
 RESULTS = Path("results")
+# Figures live in one place for the whole project; results/ keeps only the data.
+FIGURES = Path("/home/phuong/projects/csc-revisions-2026/figures/regenerated")
 
 
 def peak_dff(base, which):
@@ -63,7 +65,7 @@ def stim_time(base):
 
 
 def plot_variant_timeseries(variants, out, stim, ylabel=r"$\mathbf{\Delta F/F_{0}}$",
-                            lsizes=None, ylim=None):
+                            lsizes=None, ylim=None, legend_loc="best"):
     """Mean ± SEM ΔF/F₀ over time per variant (Fig 2c/2f/S2a/S2c style)."""
     lsizes = lsizes or [16, 12, 8]
     ta, tb = stim
@@ -77,8 +79,19 @@ def plot_variant_timeseries(variants, out, stim, ylabel=r"$\mathbf{\Delta F/F_{0
             lw = lsizes[i] if i < len(lsizes) else lsizes[-1]
             color = VAR_COLORS.get(label, "#888")
             ax.fill_between(tgrid, mean - sem, mean + sem, color=color, alpha=0.25, lw=0, zorder=2)
-            ax.plot(tgrid, mean, color=color, lw=lw, label=f"{label}  (n={M.shape[0]})", zorder=3)
-        ax.legend(loc="best", framealpha=0.9, fontsize=44)
+            # n is not printed in the legend: it is identical for all three curves and is
+            # recorded once in Table S1 ("n = 10 time-lapse repeats"), which the Figure 2
+            # caption points to. Printing it three times also widened the legend.
+            ax.plot(tgrid, mean, color=color, lw=lw, label=label, zorder=3)
+        if legend_loc == "above":
+            # Every in-axes position was tested with analysis/check_plot_collisions.py and every
+            # one covers data: best 3 points, lower left 13, centre 21, upper right 101. These are
+            # decay traces that sweep the whole panel, so there is no empty corner to find.
+            ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.005), ncol=3,
+                      framealpha=0.0, fontsize=54, borderaxespad=0.0, columnspacing=1.4,
+                      handletextpad=0.4)
+        else:
+            ax.legend(loc=legend_loc, framealpha=0.9, fontsize=62)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel(ylabel)
         ax.set_xlim(tgrid[0], tgrid[-1])
@@ -130,34 +143,63 @@ def main():
     lov = [("ddFP", *dff_traces("0--ddFP")),
            ("LOVfast", *dff_traces("1--LOV/0--I427V")),
            ("LOVslow", *dff_traces("1--LOV/1--V416I"))]
-    out = plot_variant_timeseries(lov, RESULTS / "fig_2c_LOV_variants.png",
-                                  stim_time("1--LOV/0--I427V"))
+    out = plot_variant_timeseries(lov, FIGURES / "fig_2c_LOV_variants.png",
+                                  stim_time("1--LOV/0--I427V"), legend_loc="above")
     print("saved", out)
+    # 2c claim: "LOVfast and LOVslow decreased significantly". The 2f counterpart below tested the
+    # matching iLID claim on max dF/F0; LOV dissociates, so the same test runs on MIN dF/F0. The
+    # text asserted significance for both panels while Table S1 recorded 2C as descriptive with no
+    # statistic -- the iLID test existed but was unreported, and this one did not exist at all.
+    troughs = {lab: M.min(1) for lab, M, _ in lov}
+    fval_c, pval_c = st.f_oneway(*troughs.values())
+    print(f"2c min ΔF/F0 one-way ANOVA across {list(troughs)}: F={fval_c:.1f}, {format_p(pval_c)}")
+    pair_c = {}
+    for a, b in [("ddFP", "LOVfast"), ("ddFP", "LOVslow")]:
+        p_ = float(st.ttest_ind(troughs[a], troughs[b], equal_var=False).pvalue)
+        pair_c[f"{a} vs {b}, min dF/F0 (Welch)"] = p_
+        print(f"    {a} vs {b} (min, Welch): {troughs[a].mean():.3f} vs {troughs[b].mean():.3f}"
+              f"  {format_p(p_)}")
+    write_ledger(FIGURES / "fig_2c_LOV_variants.png", "analyze_ddfp_kinetics.py",
+                 "one-way ANOVA across variants on min dF/F0, Welch t-tests pairwise "
+                 "(uncorrected -- only two planned contrasts)",
+                 {},
+                 computed_only={"LOV variants min dF/F0 one-way ANOVA F": (float(fval_c), "F"),
+                                "LOV variants min dF/F0 one-way ANOVA": float(pval_c), **pair_c})
 
     # --- Fig 2f: iLID reversion variants (ddFP control, iLIDfast, iLIDslow) ---
     ilid = [("ddFP", *dff_traces("0--ddFP")),
             ("iLIDfast", *dff_traces("3--iLID/0--I427V")),
             ("iLIDslow", *dff_traces("3--iLID/1--V416I"))]
-    out = plot_variant_timeseries(ilid, RESULTS / "fig_2f_iLID_variants.png",
-                                  stim_time("3--iLID/0--I427V"))
+    out = plot_variant_timeseries(ilid, FIGURES / "fig_2f_iLID_variants.png",
+                                  stim_time("3--iLID/0--I427V"), legend_loc="above")
     print("saved", out)
     # 2f claim: iLIDslow has lower induction -> one-way ANOVA + Tukey on max ΔF/F0
     peaks = {lab: M.max(1) for lab, M, _ in ilid}
     fval, pval = st.f_oneway(*peaks.values())
     print(f"2f max ΔF/F0 one-way ANOVA across {list(peaks)}: F={fval:.1f}, {format_p(pval)}")
+    pair_p = {}
     for a, b in [("iLIDfast", "iLIDslow"), ("ddFP", "iLIDslow")]:
         p = float(st.ttest_ind(peaks[a], peaks[b], equal_var=False).pvalue)
+        pair_p[f"{a} vs {b}, max dF/F0 (Welch)"] = p
         print(f"    {a} vs {b} (max, Welch): {peaks[a].mean():.3f} vs {peaks[b].mean():.3f}  {format_p(p)}")
+    # Table S1 declares 2C/2F descriptive (mean +/- SEM shown), and the panel carries no
+    # brackets. These support the claim that iLIDslow induces less; they are not drawn.
+    write_ledger(FIGURES / "fig_2f_iLID_variants.png", "analyze_ddfp_kinetics.py",
+                 "one-way ANOVA across variants on max dF/F0, Welch t-tests pairwise "
+                 "(uncorrected -- only two planned contrasts)",
+                 {},
+                 computed_only={"iLID variants max dF/F0 one-way ANOVA F": (float(fval), "F"),
+                                "iLID variants max dF/F0 one-way ANOVA": float(pval), **pair_p})
 
     # --- Fig S2a / S2c: intensity & linker timeseries ---
     inten = [("20 uW", *dff_traces("2--intensity/0--LOVfast-BL20uW")),
              ("200 uW", *dff_traces("2--intensity/1--LOVfast-BL200uW"))]
-    out = plot_variant_timeseries(inten, RESULTS / "fig_S2a_LOV_intensity_ts.png",
+    out = plot_variant_timeseries(inten, FIGURES / "fig_S2a_LOV_intensity_ts.png",
                                   stim_time("2--intensity/0--LOVfast-BL20uW"), lsizes=[16, 12])
     print("saved", out)
     link = [("13 aa", *dff_traces("4--linker/0--iLIDslow-13AA")),
             ("20 aa", *dff_traces("4--linker/1--iLIDslow-20AA"))]
-    out = plot_variant_timeseries(link, RESULTS / "fig_S2c_linker_ts.png",
+    out = plot_variant_timeseries(link, FIGURES / "fig_S2c_linker_ts.png",
                                   stim_time("4--linker/0--iLIDslow-13AA"), lsizes=[16, 12])
     print("saved", out)
 
@@ -166,7 +208,7 @@ def main():
     hi = peak_dff("2--intensity/1--LOVfast-BL200uW", "min")
     out, p = two_group_strip(
         [(r"20 $\mathbf{\mu}$W", lo), (r"200 $\mathbf{\mu}$W", hi)],
-        RESULTS / "fig_S2b_LOV_intensity.png",
+        FIGURES / "fig_S2b_LOV_intensity.png",
         ylabel=r"Min $\mathbf{\Delta F/F_{0}}$",
         colors={r"20 $\mathbf{\mu}$W": "#2ECC71", r"200 $\mathbf{\mu}$W": "#EA822C"})
     print(f"S2b LOVfast 20 vs 200 uW (min dF/F0): {lo.mean():.3f} vs {hi.mean():.3f}  "
@@ -178,7 +220,7 @@ def main():
     aa20 = peak_dff("4--linker/1--iLIDslow-20AA", "max")
     out, p = two_group_strip(
         [("13 aa", aa13), ("20 aa", aa20)],
-        RESULTS / "fig_S2d_linker.png",
+        FIGURES / "fig_S2d_linker.png",
         ylabel=r"Max $\mathbf{\Delta F/F_{0}}$",
         colors={"13 aa": "#2ECC71", "20 aa": "#EA822C"})
     print(f"S2d linker 13 vs 20 aa (max dF/F0): {aa13.mean():.3f} vs {aa20.mean():.3f}  "

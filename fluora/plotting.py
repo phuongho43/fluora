@@ -75,6 +75,23 @@ STYLE = {
 }
 
 
+
+def scaled_style(factor, **overrides):
+    """STYLE with every type size multiplied by `factor`.
+
+    Printed size is source_pt x (placed_width / source_width) x 0.5, so a panel whose source is
+    unusually wide for the slot it occupies -- three sub-plots side by side placed in a narrow
+    column -- prints its text far smaller than its neighbours even though the code says the same
+    number. Scaling that panel's type is the honest fix; shrinking its source figure would change
+    its aspect and re-flow the whole composite.
+    """
+    keys = ("font.size", "axes.labelsize", "xtick.labelsize", "ytick.labelsize",
+            "legend.fontsize")
+    out = {**STYLE, **{k: STYLE[k] * factor for k in keys if k in STYLE}}
+    out.update(overrides)
+    return out
+
+
 def errorbar_halfwidth(vals: np.ndarray, kind: str = "sem") -> float:
     """Half-width of an error bar for 1D ``vals`` (flowsmith conventions).
 
@@ -222,12 +239,12 @@ def plot_decoder_timeseries(
         if yticks is not None:
             ax.set_yticks(yticks)
         ax.locator_params(axis="x", nbins=7)
-        leg = ax.legend(loc=legend_loc, framealpha=0.9, fontsize=44)
+        leg = ax.legend(loc=legend_loc, framealpha=0.9, fontsize=62)
         leg.set_zorder(6)
         if title:
             ax.set_title(title)
         if caption:
-            fig.text(0.99, 0.005, caption, ha="right", fontsize=28, color="#555")
+            fig.text(0.99, 0.005, caption, ha="right", fontsize=44, color="#555")
         fig.tight_layout()
         fig.savefig(out)
         plt.close(fig)
@@ -289,7 +306,13 @@ def plot_input_regime_summary(
     offsets = np.linspace(-dodge, dodge, ncond) if ncond > 1 else [0.0]
 
     with mpl.rc_context(STYLE):
-        fig, ax = plt.subplots(figsize=(20, 16))
+        # Wide and short, not taller than wide. This panel sits in the stack beside Figure 2G with
+        # H and J, and in a STACK a panel's height is what it costs everyone else: at 1.25 aspect
+        # it was 4.6 cm tall for 5.9 cm of width, and it and J together consumed the whole row
+        # budget, which is why H was stuck at 4.9 cm holding three sub-plots. Three dodged groups
+        # with an interaction bracket do not need a square canvas. Aspect ~3 costs a third of the
+        # height and leaves the width for H.
+        fig, ax = plt.subplots(figsize=(24.0, 20.5))
         ax.axhline(0, color=INK, lw=4, ls=(0, (1, 2)), alpha=0.6, zorder=1)
         for ci, cond in enumerate(conditions):
             color = cond["color"]
@@ -328,12 +351,17 @@ def plot_input_regime_summary(
                     x1, x2 = ri + offsets[0], ri + offsets[1]
                     ax.plot([x1, x1, x2, x2], [y, y + tick, y + tick, y], color=INK, lw=5)
                     ax.text((x1 + x2) / 2, y + tick, lab, ha="center", va="bottom",
-                            fontsize=44, color=INK)
-        # legend (condition colours) -- lower-left corner is clear of the data
+                            fontsize=62, color=INK)
         handles = [mpl.lines.Line2D([], [], marker="o", ls="none", ms=28,
                    markerfacecolor=c["color"], markeredgecolor=INK, markeredgewidth=2,
                    label=c["label"]) for c in conditions]
-        ax.legend(handles=handles, loc="lower left", framealpha=0.9, fontsize=44)
+        # Legend ABOVE the axes, not in a corner. "The lower-left corner is clear of the data" was
+        # true when this panel was square; flattening it to a 2.7 aspect on 2026-09-08 put the
+        # legend straight over the None-Input points. A corner that is empty at one aspect is not
+        # empty at another, so it goes outside the axes where no aspect can collide with it.
+        ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.005),
+                  ncol=len(handles), framealpha=0.0, fontsize=62,
+                  borderaxespad=0.0, columnspacing=1.6)
         ax.set_xticks(range(len(reg_names)))
         ax.set_xticklabels([f"{n}\nInput" for n in reg_names])
         ax.set_ylabel(ylabel)
@@ -410,7 +438,7 @@ def plot_decoder_tuning(
         handles = [mpl.lines.Line2D([], [], marker="o", ls="none", ms=26,
                    markerfacecolor=regime_colors.get(r, "#888"), markeredgecolor=INK,
                    markeredgewidth=2, label=f"{r} input") for r in compare]
-        ax.legend(handles=handles, loc="lower left", framealpha=0.9, fontsize=44)
+        ax.legend(handles=handles, loc="lower left", framealpha=0.9, fontsize=62)
         ax.set_xticks(range(len(conds)))
         ax.set_xticklabels(conds)
         ax.set_ylabel(ylabel)
@@ -427,7 +455,7 @@ def plot_single_cell_traces(
     conditions, out, tgrid, pulses=None, xlabel="Time (s)",
     ylabel=r"$\mathbf{\Delta F/F_{0}}$", ylim=(-0.6, 0.9), yticks=None,
     cell_alpha=0.3, cell_lw=1.5, cell_color=None, mean_lw=4.0,
-    min_frames=55, pulse_alpha=0.35, apply_qc=True,
+    min_frames=55, pulse_alpha=0.35, apply_qc=True, font_scale=1.0,
 ):
     """One panel per condition: every single-cell ΔF/F₀ trajectory + the mean.
 
@@ -442,8 +470,29 @@ def plot_single_cell_traces(
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     n = len(conditions)
-    with mpl.rc_context(STYLE):
-        fig, axes = plt.subplots(1, n, figsize=(12 * n, 16), sharey=True)
+    with mpl.rc_context(scaled_style(font_scale)):
+        # Halving this canvas on 2026-09-07 raised the measured type from 3.6 to 7.5 pt and made
+        # the panel worse: "Time (s)" was drawn under EVERY sub-plot, so at half size the three
+        # copies ran into each other. The label was the problem, not the canvas. Published Cell
+        # Stem Cell figures put one shared axis label under a row of sub-plots (e.g. PMC12979008
+        # Figure 5B, three stacked plots with a single "Days" beneath), which is what happens
+        # below. The canvas can then come down, but only so far: 0.60 was tried and collapsed
+        # the panel again, because the binding constraint is the canvas HEIGHT -- title, axes,
+        # tick labels and label all have to fit 16 x scale inches at 72 pt type, and at 0.60 the
+        # text took more than half of it and the tick labels merged into each other. 0.70 with
+        # three x ticks instead of six is what fits. Aspect is unchanged either way, so the
+        # figure's height is unaffected.
+        # Wide and short, and BIG. This panel used to sit in a 4.9 cm slot beside Figure 2G,
+        # three sub-plots at 1.6 cm each, and no font size fixes 1.6 cm. It now has a full-width
+        # row of its own (16.7 cm, 5.6 cm per sub-plot), which it can afford because the row it
+        # left was driven by this stack rather than by G -- G had 2.9 cm of slack.
+        #
+        # Two things are set here. The ASPECT (6.0) keeps the taller panel from eating the height
+        # that move freed: 16.7 cm wide at 6.0 is 2.8 cm tall, which is the budget. The SIZE
+        # (72 in wide) sets printed type: at 16.7 cm placed, 72 in of canvas lands 72 pt source
+        # type at about 7 pt on the page. Aspect and size are independent levers -- see
+        # FOR-PHUONG/FIGURE-LESSONS-FROM-PUBLISHED-20260907.md.
+        fig, axes = plt.subplots(1, n, figsize=(12 * n * 1.05, 16 * 1.05), sharey=True)
         axes = np.atleast_1d(axes)
         spans = np.atleast_2d(pulses) if pulses is not None and len(pulses) else None
         for ax, cond in zip(axes, conditions):
@@ -466,29 +515,39 @@ def plot_single_cell_traces(
                 ax.plot(tgrid, y, color=ccolor, lw=cell_lw, alpha=cell_alpha, zorder=2)
             if ncells:
                 mean = C.mean(0)
-                # mean: condition-coloured line, a white halo to lift it off the
-                # same-coloured cells, and a thin dark core so it pops
+                # Mean: one solid dark line over a white halo. It used to be three layers -- a
+                # condition-coloured line with a thin dark core on top -- which meant the mean was
+                # the same hue as the cloud of single cells behind it and read as slightly darker
+                # cloud rather than as a separate curve. A single dark line against a coloured
+                # cloud is the contrast that makes it findable. The white halo stays: it separates
+                # the line from the densest part of the cloud.
                 ax.plot(tgrid, mean, color="white", lw=mean_lw + 3.0, zorder=3.8,
                         solid_capstyle="round", solid_joinstyle="round")
-                ax.plot(tgrid, mean, color=cond["color"], lw=mean_lw, zorder=4,
-                        solid_capstyle="round", solid_joinstyle="round")
-                ax.plot(tgrid, mean, color=INK, lw=max(mean_lw * 0.35, 1.2), zorder=4.1,
+                ax.plot(tgrid, mean, color=INK, lw=mean_lw, zorder=4,
                         solid_capstyle="round", solid_joinstyle="round")
             ax.axhline(0, color=INK, lw=4, ls=(0, (1, 2)), alpha=0.6, zorder=1)
             # cell counts go in the caption (not on-figure), matching the other panels
-            ax.set_title(cond["label"], fontsize=64)
+            ax.set_title(cond["label"], fontsize=64 * font_scale)
             if apply_qc:
                 print(f"  {cond['label']}: {ncells} cells kept, {n_dropped} QC-dropped "
                       f"of {n_full} full-length")
-            ax.set_xlabel(xlabel)
             ax.set_xlim(tgrid[0], tgrid[-1])
-            ax.locator_params(axis="x", nbins=6)
+            # Three ticks, not six: at this panel's printed width each sub-plot is about 1.6 cm,
+            # and six labels ran into each other.
+            ax.set_xticks([t for t in (0, 150, 300) if tgrid[0] <= t <= tgrid[-1]])
             if ylim:
                 ax.set_ylim(ylim)
             if yticks is not None:
                 ax.set_yticks(yticks)
         axes[0].set_ylabel(ylabel)
         fig.tight_layout(w_pad=0.6)
+        # One x-label for the row, after tight_layout so it centres on the axes actually drawn.
+        if xlabel:
+            span = (axes[0].get_position().x0 + axes[-1].get_position().x1) / 2
+            fig.text(span, 0.012, xlabel, ha="center", va="bottom",
+                     fontsize=mpl.rcParams["axes.labelsize"],
+                     fontweight=mpl.rcParams["axes.labelweight"])
+            fig.subplots_adjust(bottom=fig.subplotpars.bottom + 0.075)
         fig.savefig(out)
         plt.close(fig)
     return out

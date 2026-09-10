@@ -1,0 +1,22 @@
+{
+    "upload_type": "software",
+    "title": "Fluora: Segmentation, tracking and quantification of live-cell fluorescence timelapses",
+    "description": "Segmentation, tracking and quantification of live-cell fluorescence timelapses. Research software supporting the frequency-modulated optogenetic decoder study. See the repository README for usage.",
+    "creators": [
+        {
+            "name": "Ho, Phuong",
+            "orcid": "0000-0001-7375-0644",
+            "affiliation": "Shu Chien-Gene Lay Department of Bioengineering, University of California, San Diego, La Jolla, CA, USA"
+        }
+    ],
+    "keywords": [
+        "live-cell imaging",
+        "cell segmentation",
+        "cell tracking",
+        "fluorescence quantification",
+        "ddFP",
+        "optogenetics"
+    ],
+    "license": "mit",
+    "access_right": "open"
+}

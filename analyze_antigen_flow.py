@@ -22,11 +22,13 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from fluora.plotting import STYLE, INK, errorbar_halfwidth
-from fluora.stats import blocked_interaction, format_p
+from fluora.stats import blocked_interaction, format_p, write_ledger
 
 warnings.filterwarnings("ignore")
 D = Path("/home/phuong/projects/csc-revisions-2026/data/4--antigen/0--K562-fc-staining")
 RESULTS = Path("results")
+# Figures live in one place for the whole project; results/ keeps only the data.
+FIGURES = Path("/home/phuong/projects/csc-revisions-2026/figures/regenerated")
 CH = "FL4_A"
 GROUPS = {"0--plain-K562": "Plain", "1--const-antigen": "Const",
           "2--decoder-none-input": "None", "3--decoder-sparse-input": "Sparse",
@@ -104,7 +106,7 @@ def plot(panels, out):
                 y = df.pct_pos.max() + 10
                 ax.plot([x1, x1, x2, x2], [y - 4, y, y, y - 4], color=INK, lw=5)
                 ax.text((x1 + x2) / 2, y + 1, format_p(p), ha="center", va="bottom",
-                        fontsize=44, color=INK)
+                        fontsize=62, color=INK)
             ax.set_title(title, fontsize=64)
             ax.set_xticks(range(len(ORDER)))
             ax.set_xticklabels(ORDER, rotation=35, ha="right")
@@ -121,8 +123,19 @@ def main():
     cd19, cd_p = analyze("0--CD19", "CD19 (Dense-CD19 decoder)")
     psma, ps_p = analyze("1--PSMA", "PSMA (Sparse-PSMA decoder)")
     out = plot([(cd19, "Dense-CD19", cd_p), (psma, "Sparse-PSMA", ps_p)],
-               RESULTS / "fig_5b_antigen_flow.png")
+               FIGURES / "fig_S7b_antigen_flow.png")
     print("\nsaved", out)
+    # plot() draws ONE bracket per sub-panel -- Dense vs Sparse, the decoder's frequency
+    # selectivity. The other Tukey pairs are computed but never appear on the figure.
+    drawn, computed = {}, {}
+    for label, pv in (("Dense-CD19", cd_p), ("Sparse-PSMA", ps_p)):
+        for pair, p in pv.items():
+            a, b = sorted(pair)
+            target = drawn if {"Dense", "Sparse"} == set(pair) else computed
+            target[f"{label}, {a} vs {b}"] = p
+    write_ledger(FIGURES / "fig_S7b_antigen_flow.png", "analyze_antigen_flow.py",
+                 "one-way RM-ANOVA over inputs with replicate as block, Tukey HSD pairwise",
+                 drawn, computed_only=computed)
 
 
 if __name__ == "__main__":
